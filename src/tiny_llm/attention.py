@@ -61,29 +61,42 @@ class SimpleMultiHeadAttention:
         mla = mla.swapaxes(-1,-2) # (N x L x D x H) -> N x L x H x D
         mla = mla.reshape(*mla.shape[:-2], self.hidden_size) # N x L x H x D -> N x L x (H.D)
 
-        return mx.matmul(mla, self.wo.T)
-
-
-
-
-
-    
-
-        
+        return mx.matmul(mla, self.wo.T)      
 
 
 def causal_mask(L: int, S: int, dtype: mx.Dtype) -> mx.array:
-    pass
+    if S < L:
+        raise ValueError("Key sequence must be at least as long as query sequence")
+
+    query_pos = mx.arange(S - L, S)[:, None]  # (L, 1)
+    key_pos = mx.arange(S)[None, :]          # (1, S)
+    return mx.where(key_pos > query_pos, -float("inf"), 0.0).astype(dtype)
+
 
 
 def scaled_dot_product_attention_grouped(
-    query: mx.array,
-    key: mx.array,
-    value: mx.array,
+    query: mx.array, # N x H_q x L x D
+    key: mx.array, # N x H x S x D
+    value: mx.array, # N x H x S x D
     scale: float | None = None,
-    mask: mx.array | str | None = None,
+    mask: mx.array | str | None = None, 
 ) -> mx.array:
-    pass
+    if query.shape[-3]%key.shape[-3] != 0:
+        raise ValueError("Query head count must be divisible by key/value head count")
+    n_repeats = query.shape[-3]//key.shape[-3]
+    if isinstance(mask, str):
+        if mask != "causal":
+            raise ValueError(f"Unsupported attention mask: {mask!r}")
+        mask = causal_mask(query.shape[-2], key.shape[-2], query.dtype)
+    elif mask is not None and mask.ndim > 2:
+        mask = mask.reshape(
+            *mask.shape[:-3], key.shape[-3], n_repeats, *mask.shape[-2:]
+            )    
+    query = query.reshape(*query.shape[:-3], key.shape[-3], n_repeats, *query.shape[-2:])
+    key, value = mx.reshape(key, (*key.shape[:-2], 1, *key.shape[-2:])), mx.reshape(value, (*value.shape[:-2], 1, *value.shape[-2:]))
+    output_per_i = scaled_dot_product_attention_simple(query,key,value,scale,mask)
+    output = mx.reshape(output_per_i, (*output_per_i.shape[:-4], output_per_i.shape[-4]*output_per_i.shape[-3], *output_per_i.shape[-2:]))
+    return output
 
 
 def paged_attention(

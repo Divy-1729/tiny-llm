@@ -25,14 +25,55 @@ class Qwen3MultiHeadAttention:
         theta: int = 1000000,
         rms_norm_eps: float = 1e-5,
     ):
-        pass
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads
+        self.head_dim = head_dim
+
+        self.wq = wq
+        self.wk = wk
+        self.wv = wv
+        self.wo = wo
+        self.q_norm = q_norm
+        self.k_norm = k_norm
+        self.rms_norm_eps = rms_norm_eps
+
+        self.scale = head_dim ** -0.5
+        self.rope = RoPE(head_dim, max_seq_len, theta)
 
     def __call__(
         self,
         x: mx.array,
         mask: mx.array | str | None = None,
     ) -> mx.array:
-        pass
+        
+        q1 = mx.matmul(x,self.wq.T) # B x L x (H_q X D)
+        k1 = mx.matmul(x, self.wk.T) # B x L x (H x D)
+        v1 = mx.matmul(x, self.wv.T) # B x l x (H x D)
+
+        q = mx.reshape(q1, (*q1.shape[:-1], self.num_heads, q1.shape[-1]//self.num_heads))  # B x L x H_q X D
+        k = mx.reshape(k1, (*k1.shape[:-1], self.num_kv_heads, k1.shape[-1]//self.num_kv_heads)) # B x L x H x D
+        v = mx.reshape(v1, (*v1.shape[:-1], self.num_kv_heads, v1.shape[-1]//self.num_kv_heads)) # B x L x H x D
+
+        q = mx.fast.rms_norm(q, self.q_norm, eps=self.rms_norm_eps)
+        k = mx.fast.rms_norm(k, self.k_norm, eps=self.rms_norm_eps) 
+        positions = slice(0, x.shape[1])
+        q = self.rope(q, offset = positions) # B x L x H_q X D
+        k = self.rope(k, offset = positions) # B x L x H x D
+
+        q = q.swapaxes(-3,-2) # B x H_q x L x D
+        k = k.swapaxes(-3,-2) # B x H x L x D
+        v = v.swapaxes(-3,-2) # B x H x L x D
+
+
+        out = scaled_dot_product_attention_grouped(q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32), self.scale, mask) # B x H_q x L x D
+        out = out.swapaxes(-3,-2) # B x L x H_q x D
+        out = out.reshape(*out.shape[:-2], out.shape[-2]*out.shape[-1]) # B x L x (H_q x D)
+        output = linear(out.astype(x.dtype), self.wo) # B x L x (H_q x D)
+        return output
+
+
+    
 
 
 class Qwen3MLP:
